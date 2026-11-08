@@ -25,7 +25,7 @@ async function push(title, body, tags) {
   const r = await fetch(`${BASE}/${TOPIC}`, { method: 'POST', body, headers: h });
   if (!r.ok) throw new Error('ntfy ' + r.status);
 }
-const gr = o => { const { A, E: e } = o, solid = e && e.n >= 15 && e.net > 0 && e.pf > 1.2; return A.go && solid ? 'A+' : A.go && e && e.net > 0 ? 'A' : A.dir && A.ok >= 6 ? 'FORMING' : '-' };
+const gr = o => { const { A, E: e } = o, solid = e && e.n >= 15 && e.net > 0 && e.pf > 1.2; return A.go && solid && !A.h30x ? 'A+' : A.go && e && e.net > 0 ? 'A' : A.dir && A.ok >= 6 ? 'FORMING' : '-' };
 const fx = (n, d) => Number(n).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d });
 
 if (TEST) { await push('TEST · FelixXx', 'Background alerts are working. Real A+ setups will arrive like this.', 'bat'); console.log('test sent'); }
@@ -39,10 +39,10 @@ const MM = E.M.filter(m => !m.imp), res = { ok: 0, closed: 0, fail: 0, aplus: []
 for (let i = 0; i < MM.length; i += 3) {
   await Promise.all(MM.slice(i, i + 3).map(async m => {
     try {
-      const [c15, c1h, c4h] = await Promise.all([E.lcand(m.id, '15m', 5000), E.lcand(m.id, '1h', 500), E.lcand(m.id, '4h', 500)]);
+      const [c15, c1h, c4h, c30] = await Promise.all([E.lcand(m.id, '15m', 5000), E.lcand(m.id, '1h', 500), E.lcand(m.id, '4h', 500), E.lcand(m.id, '30m', 500).catch(() => null)]);
       if (Date.now() / 1000 - c15.at(-1).t > 2400) { res.closed++; return }
       C15[m.id] = c15.slice(-300);
-      const ed = E.backtest(c15, m.cost), A = E.analyze({ '15m': c15, '1h': c1h, '4h': c4h }, ed);
+      const ed = E.backtest(c15, m.cost), A = E.analyze(c30 && c30.length > 100 ? { '15m': c15, '30m': c30, '1h': c1h, '4h': c4h } : { '15m': c15, '1h': c1h, '4h': c4h }, ed);
       if (A.err) { res.fail++; return }
       res.ok++;
       if (gr({ A, E: ed }) === 'A+' || (FAKE && res.aplus.length === 0 && A.lv)) {
@@ -79,7 +79,7 @@ for (const { m, A, conf } of res.aplus) {
   if (conf) en.conf = true;
   if (en.conf && !en.notified) {
     const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
-    await push(`CONFIRMED A+ · ${m.n}`, `${dir} · ${A.ok}/8 checks · Zero Lag Trend + ZLSMA agree\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)}\nTP1 ${fx(en.tp[0], dp)} · TP2 ${fx(en.tp[1], dp)}\nOpen the app to place it.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
+    await push(`CONFIRMED A+ · ${m.n}`, `${dir} · ${A.ok}/8 checks · Zero Lag Trend + ZLSMA agree\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)} (risk ${(Math.abs(en.e - en.sl) / en.e * 100).toFixed(2)}%)\nTP1 ${fx(en.tp[0], dp)} (1:2) · TP2 ${fx(en.tp[1], dp)} (1:3)\n4H + 1H + 30M trend agree\nOpen the app to place it.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
     en.notified = true; sent++;
   }
 }

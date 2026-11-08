@@ -16,9 +16,7 @@ const TOPIC = process.env.NTFY_TOPIC, BASE = process.env.NTFY_URL || 'https://nt
 const APP = process.env.APP_URL || '';
 const TEST = process.env.SEND_TEST === 'true', FAKE = process.env.FAKE_APLUS === '1';
 if (!TOPIC) { console.error('NTFY_TOPIC secret is missing'); process.exit(1); }
-const SF = new URL('alerts/state.json', root);
-let ST = {}; try { ST = JSON.parse(fs.readFileSync(SF, 'utf8')) } catch (_) {}
-const now = Date.now(); for (const k in ST) if (now - ST[k] > 6 * 3600e3) delete ST[k];
+const now = Date.now();
 const COOL = 180 * 60e3;
 
 async function push(title, body, tags) {
@@ -32,33 +30,61 @@ const fx = (n, d) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 
 
 if (TEST) { await push('TEST · FelixXx', 'Background alerts are working. Real A+ setups will arrive like this.', 'bat'); console.log('test sent'); }
 
-const MM = E.M.filter(m => !m.imp), res = { ok: 0, closed: 0, fail: 0, aplus: [], unconfirmed: 0 };
+const LF = new URL('alerts/log.json', root);
+let LOG = []; try { LOG = JSON.parse(fs.readFileSync(LF, 'utf8')) } catch (_) {}
+const LOG0 = JSON.stringify(LOG), nowS = Math.floor(now / 1000);
+LOG = LOG.filter(e => nowS - e.t < 14 * 86400);
+
+const MM = E.M.filter(m => !m.imp), res = { ok: 0, closed: 0, fail: 0, aplus: [] }, C15 = {};
 for (let i = 0; i < MM.length; i += 3) {
   await Promise.all(MM.slice(i, i + 3).map(async m => {
     try {
       const [c15, c1h, c4h] = await Promise.all([E.lcand(m.id, '15m', 5000), E.lcand(m.id, '1h', 500), E.lcand(m.id, '4h', 500)]);
       if (Date.now() / 1000 - c15.at(-1).t > 2400) { res.closed++; return }
+      C15[m.id] = c15.slice(-300);
       const ed = E.backtest(c15, m.cost), A = E.analyze({ '15m': c15, '1h': c1h, '4h': c4h }, ed);
       if (A.err) { res.fail++; return }
       res.ok++;
       if (gr({ A, E: ed }) === 'A+' || (FAKE && res.aplus.length === 0 && A.lv)) {
         const z = E.zlCalc(c15.slice(-800)), n = z.c.length - 1, up = A.dir > 0, zs = z.zs[n];
-        const conf = zs != null && z.tr[n] !== 0 && (z.tr[n] > 0) === up && (z.c[n] > zs) === up;
-        if (conf || FAKE) res.aplus.push({ m, A }); else res.unconfirmed++;
+        const conf = FAKE || (zs != null && z.tr[n] !== 0 && (z.tr[n] > 0) === up && (z.c[n] > zs) === up);
+        res.aplus.push({ m, A, conf });
       }
     } catch (e) { res.fail++; console.log('fail', m.n, e.message) }
   }));
 }
 E.stop();
-let sent = 0;
-for (const { m, A } of res.aplus) {
-  const dir = A.dir > 0 ? 'BUY' : 'SELL', key = `s|${m.id}|${dir}`;
-  if (ST[key] && now - ST[key] < COOL) continue;
-  const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
-  await push(`CONFIRMED A+ · ${m.n}`, `${dir} · ${A.ok}/8 checks · Zero Lag Trend + ZLSMA agree\nEntry ${fx(A.lv.e, dp)}\nSL ${fx(A.lv.sl, dp)}\nTP1 ${fx(A.lv.tp[0], dp)} · TP2 ${fx(A.lv.tp[1], dp)}\nOpen the app to place it.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
-  ST[key] = now; sent++;
+
+// 1) results for setups already logged: TP1 or stop first (stop wins ties, like the backtest)
+for (const e of LOG) {
+  if (e.res !== 'open') continue;
+  const c = C15[e.id], up = e.dir === 'BUY';
+  if (c) for (const k of c) {
+    if (k.t < e.t0) continue;
+    const hitSL = up ? k.l <= e.sl : k.h >= e.sl, hitTP = up ? k.h >= e.tp[0] : k.l <= e.tp[0];
+    if (hitSL) { e.res = 'SL'; e.rt = k.t; break }
+    if (hitTP) { e.res = 'TP1'; e.rt = k.t; break }
+  }
+  if (e.res === 'open' && nowS - e.t > 86400) e.res = 'expired';
 }
+// 2) log every A+ setup, notify the confirmed ones once
+let sent = 0, logged = 0;
+for (const { m, A, conf } of res.aplus) {
+  const dir = A.dir > 0 ? 'BUY' : 'SELL';
+  let en = LOG.find(e => e.id === m.id && e.dir === dir && nowS - e.t < COOL / 1000);
+  if (!en) {
+    en = { t: nowS, t0: Math.floor(nowS / 900) * 900, id: m.id, n: m.n, dir, ok: A.ok, e: A.lv.e, sl: A.lv.sl, tp: A.lv.tp.slice(0, 3), conf: false, notified: false, res: 'open' };
+    LOG.push(en); logged++;
+  }
+  if (conf) en.conf = true;
+  if (en.conf && !en.notified) {
+    const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
+    await push(`CONFIRMED A+ · ${m.n}`, `${dir} · ${A.ok}/8 checks · Zero Lag Trend + ZLSMA agree\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)}\nTP1 ${fx(en.tp[0], dp)} · TP2 ${fx(en.tp[1], dp)}\nOpen the app to place it.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
+    en.notified = true; sent++;
+  }
+}
+LOG = LOG.slice(-100);
 fs.mkdirSync(new URL('alerts/', root), { recursive: true });
-fs.writeFileSync(SF, JSON.stringify(ST));
-console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ confirmed ${res.aplus.length}, A+ not confirmed ${res.unconfirmed}, sent ${sent}`);
+if (JSON.stringify(LOG) !== LOG0) fs.writeFileSync(LF, JSON.stringify(LOG));
+console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}`);
 if (res.ok === 0 && res.closed === 0) process.exit(1);

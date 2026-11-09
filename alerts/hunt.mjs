@@ -7,9 +7,12 @@ const a = sc.indexOf('const $=i=>'), b = sc.indexOf('/* ---- chart ---- */');
 if (a < 0 || b < 0) throw new Error('could not find the analysis engine in index.html');
 const za = sc.indexOf('function lreg('), zb = sc.indexOf('function stDraw(');
 if (za < 0 || zb < 0) throw new Error('could not find the confirmation indicators in index.html');
+const pa = sc.indexOf('const p0Of='), pb = sc.indexOf('function gradeP(');
+if (pa < 0 || pb < 0) throw new Error('could not find the Live Analysis picks in index.html');
 const engine = sc.slice(a, b) + '\n' + sc.slice(za, zb) +
+  "\nconst KIND={'OVER/UNDER':'digits','EVEN/ODD':'digits','MATCHES':'digits','DIFFERS':'digits','RISE/FALL':'dir','HIGHER/LOWER':'dir'};\n" + sc.slice(pa, pb) +
   "\nM.unshift({id:'cryBTCUSD',n:'BTC/USD',g:'Crypto',cost:.0006},{id:'frxXAUUSD',n:'XAU/USD',g:'Metal',cost:.0002});" +
-  "\nreturn {M,lcand,backtest,analyze,zlCalc,stop:()=>{try{ws&&ws.close()}catch(e){}}};";
+  "\nreturn {M,req,picksOf,lcand,backtest,analyze,zlCalc,stop:()=>{try{ws&&ws.close()}catch(e){}}};";
 const E = new Function('WebSocket', 'localStorage', 'document', engine)(globalThis.WebSocket, undefined, undefined);
 
 const TOPIC = process.env.NTFY_TOPIC, BASE = process.env.NTFY_URL || 'https://ntfy.sh';
@@ -53,6 +56,27 @@ for (let i = 0; i < MM.length; i += 3) {
     } catch (e) { res.fail++; console.log('fail', m.n, e.message) }
   }));
 }
+// Live Analysis picks (volatility indices): same scan as the app, pushed when z >= 2.5
+const PF = new URL('alerts/picks.json', root);
+let PK = {}; try { PK = JSON.parse(fs.readFileSync(PF, 'utf8')) } catch (_) {}
+const PK0 = JSON.stringify(PK); let pushedP = 0;
+for (const k of Object.keys(PK)) if (nowS - PK[k] > 6 * 3600) delete PK[k];
+try {
+  for (const m of E.M.filter(z => z.g === 'Vol')) {
+    try {
+      const r = await E.req({ ticks_history: m.id, count: 500, end: 'latest', style: 'ticks' }), p = r.history.prices, pip = r.pip_size || 2, g = p.map(v => +v.toFixed(pip).slice(-1));
+      if (Date.now() / 1000 - r.history.times.at(-1) > 600) continue;
+      for (const o of E.picksOf(m, p.slice(-500), g.slice(-500)).filter(o => o.z >= 2.5)) {
+        const key = `${m.id}|${o.cat}|${o.pick}`;
+        if (PK[key] && nowS - PK[key] < 1800) continue;
+        if (pushedP >= 4) break;
+        await push(`RECOMMENDED · ${m.n}`, `${o.cat}: ${o.pick} (${o.z.toFixed(1)}σ)`, 'dart');
+        PK[key] = nowS; pushedP++;
+      }
+    } catch (e) { console.log('picks fail', m.n, e.message) }
+  }
+} catch (e) { console.log('picks error', e.message) }
+if (JSON.stringify(PK) !== PK0) { fs.mkdirSync(new URL('alerts/', root), { recursive: true }); fs.writeFileSync(PF, JSON.stringify(PK)) }
 E.stop();
 
 // 1) results for setups already logged: TP1 or stop first (stop wins ties, like the backtest)
@@ -84,7 +108,18 @@ for (const { m, A, conf } of res.aplus) {
   }
 }
 LOG = LOG.slice(-100);
+// daily "still watching" message, once per UTC day after 12:00 UTC (8am Curacao)
+try {
+  const SF = new URL('alerts/state.json', root);
+  let st = {}; try { st = JSON.parse(fs.readFileSync(SF, 'utf8')) } catch (_) {}
+  const day = new Date().toISOString().slice(0, 10);
+  if (new Date().getUTCHours() >= 12 && st.hb !== day && res.ok + res.closed > 0) {
+    const y = LOG.filter(e => nowS - e.t < 86400), w = LOG.filter(e => e.res === 'TP1').length, l = LOG.filter(e => e.res === 'SL').length;
+    await push('Still watching · FelixXx', `Background job is alive.\nLast 24h: ${y.length} A+ setup${y.length === 1 ? '' : 's'}, ${y.filter(e => e.notified).length} alerted.\n14-day results: ${w} won, ${l} stopped.\nChecked ${res.ok} markets now (${res.closed} closed).`, 'eyes');
+    st.hb = day; fs.mkdirSync(new URL('alerts/', root), { recursive: true }); fs.writeFileSync(SF, JSON.stringify(st));
+  }
+} catch (e) { console.log('heartbeat failed', e.message) }
 fs.mkdirSync(new URL('alerts/', root), { recursive: true });
 if (JSON.stringify(LOG) !== LOG0) fs.writeFileSync(LF, JSON.stringify(LOG));
-console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}`);
+console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}, picks sent ${pushedP}`);
 if (res.ok === 0 && res.closed === 0) process.exit(1);

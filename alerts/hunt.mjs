@@ -38,13 +38,13 @@ let LOG = []; try { LOG = JSON.parse(fs.readFileSync(LF, 'utf8')) } catch (_) {}
 const LOG0 = JSON.stringify(LOG), nowS = Math.floor(now / 1000);
 LOG = LOG.filter(e => nowS - e.t < 14 * 86400);
 
-const MM = E.M.filter(m => !m.imp), res = { ok: 0, closed: 0, fail: 0, aplus: [] }, C15 = {};
+const MM = E.M.filter(m => !m.imp), res = { ok: 0, closed: 0, fail: 0, aplus: [], agrade: [] }, C15 = {}, CN = [];
 for (let i = 0; i < MM.length; i += 3) {
   await Promise.all(MM.slice(i, i + 3).map(async m => {
     try {
       const [c15, c1h, c4h, c30] = await Promise.all([E.lcand(m.id, '15m', 5000), E.lcand(m.id, '1h', 500), E.lcand(m.id, '4h', 500), E.lcand(m.id, '30m', 500).catch(() => null)]);
       if (Date.now() / 1000 - c15.at(-1).t > 2400) { res.closed++; return }
-      C15[m.id] = c15.slice(-300);
+      C15[m.id] = c15.slice(-300); CN.push(c15.length);
       const ed = E.backtest(c15, m.cost), A = E.analyze(c30 && c30.length > 100 ? { '15m': c15, '30m': c30, '1h': c1h, '4h': c4h } : { '15m': c15, '1h': c1h, '4h': c4h }, ed);
       if (A.err) { res.fail++; return }
       res.ok++;
@@ -52,6 +52,9 @@ for (let i = 0; i < MM.length; i += 3) {
         const z = E.zlCalc(c15.slice(-800)), n = z.c.length - 1, up = A.dir > 0, zs = z.zs[n];
         const conf = FAKE || (zs != null && z.tr[n] !== 0 && (z.tr[n] > 0) === up && (z.c[n] > zs) === up);
         res.aplus.push({ m, A, conf });
+      } else if (gr({ A, E: ed }) === 'A' && A.lv) {
+        const z = E.zlCalc(c15.slice(-800)), n = z.c.length - 1, up = A.dir > 0, zs = z.zs[n];
+        res.agrade.push({ m, A, conf: zs != null && z.tr[n] !== 0 && (z.tr[n] > 0) === up && (z.c[n] > zs) === up, pf: ed ? ed.pf : 0, wr: ed ? ed.wr : 0, nt: ed ? ed.n : 0 });
       }
     } catch (e) { res.fail++; console.log('fail', m.n, e.message) }
   }));
@@ -95,7 +98,7 @@ for (const e of LOG) {
 let sent = 0, logged = 0;
 for (const { m, A, conf } of res.aplus) {
   const dir = A.dir > 0 ? 'BUY' : 'SELL';
-  let en = LOG.find(e => e.id === m.id && e.dir === dir && nowS - e.t < COOL / 1000);
+  let en = LOG.find(e => e.id === m.id && e.dir === dir && !e.g && nowS - e.t < COOL / 1000);
   if (!en) {
     en = { t: nowS, t0: Math.floor(nowS / 900) * 900, id: m.id, n: m.n, dir, ok: A.ok, e: A.lv.e, sl: A.lv.sl, tp: A.lv.tp.slice(0, 3), conf: false, notified: false, res: 'open' };
     LOG.push(en); logged++;
@@ -107,19 +110,36 @@ for (const { m, A, conf } of res.aplus) {
     en.notified = true; sent++;
   }
 }
-LOG = LOG.slice(-100);
+// 2b) A-grade setups (lower quality: positive backtest but not yet a proven A+): log with g:'A' and notify once
+let sentA = 0;
+for (const { m, A, conf, pf, wr, nt } of res.agrade) {
+  const dir = A.dir > 0 ? 'BUY' : 'SELL';
+  let en = LOG.find(e => e.id === m.id && e.dir === dir && e.g === 'A' && nowS - e.t < COOL / 1000);
+  if (!en) {
+    en = { t: nowS, t0: Math.floor(nowS / 900) * 900, id: m.id, n: m.n, dir, ok: A.ok, e: A.lv.e, sl: A.lv.sl, tp: A.lv.tp.slice(0, 3), conf, notified: false, res: 'open', g: 'A' };
+    LOG.push(en); logged++;
+  }
+  if (conf) en.conf = true;
+  if (!en.notified && sentA < 3) {
+    const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
+    await push(`A-GRADE · ${m.n}`, `${dir} · ${A.ok}/8 checks · lower quality than A+\nBacktest here: ${nt} trades, PF ${pf.toFixed(2)}\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)} (risk ${(Math.abs(en.e - en.sl) / en.e * 100).toFixed(2)}%)\nTP1 ${fx(en.tp[0], dp)} (1:2)\nTrade small and tag it "outside the rules".`, 'warning');
+    en.notified = true; sent++; sentA++;
+  }
+}
+LOG = LOG.slice(-150);
 // daily "still watching" message, once per UTC day after 12:00 UTC (8am Curacao)
 try {
   const SF = new URL('alerts/state.json', root);
   let st = {}; try { st = JSON.parse(fs.readFileSync(SF, 'utf8')) } catch (_) {}
   const day = new Date().toISOString().slice(0, 10);
   if (new Date().getUTCHours() >= 12 && st.hb !== day && res.ok + res.closed > 0) {
-    const y = LOG.filter(e => nowS - e.t < 86400), w = LOG.filter(e => e.res === 'TP1').length, l = LOG.filter(e => e.res === 'SL').length;
+    const LA = LOG.filter(e => !e.g), y = LA.filter(e => nowS - e.t < 86400), w = LA.filter(e => e.res === 'TP1').length, l = LA.filter(e => e.res === 'SL').length;
     await push('Still watching · FelixXx', `Background job is alive.\nLast 24h: ${y.length} A+ setup${y.length === 1 ? '' : 's'}, ${y.filter(e => e.notified).length} alerted.\n14-day results: ${w} won, ${l} stopped.\nChecked ${res.ok} markets now (${res.closed} closed).`, 'eyes');
     st.hb = day; fs.mkdirSync(new URL('alerts/', root), { recursive: true }); fs.writeFileSync(SF, JSON.stringify(st));
   }
 } catch (e) { console.log('heartbeat failed', e.message) }
 fs.mkdirSync(new URL('alerts/', root), { recursive: true });
 if (JSON.stringify(LOG) !== LOG0) fs.writeFileSync(LF, JSON.stringify(LOG));
-console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}, picks sent ${pushedP}`);
+console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length}, A-grade now ${res.agrade.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}, picks sent ${pushedP}, 15m candles per market ${CN.length ? Math.min(...CN) + '-' + Math.max(...CN) : 'none'} (backtest needs 2000+)`);
 if (res.ok === 0 && res.closed === 0) process.exit(1);
+

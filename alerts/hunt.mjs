@@ -104,6 +104,11 @@ for (const { m, A, conf } of res.aplus) {
     LOG.push(en); logged++;
   }
   if (conf) en.conf = true;
+  if (!en.conf && !en.pre && !en.notified) {
+    const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
+    await push(`A+ SETUP · ${m.n}`, `${dir} · ${A.ok}/8 checks · backtest proven · NOT yet confirmed by Zero Lag Trend\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)} (risk ${(Math.abs(en.e - en.sl) / en.e * 100).toFixed(2)}%)\nTP1 ${fx(en.tp[0], dp)} (1:2)\nYou'll get another alert if it gets confirmed.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
+    en.pre = true; sent++;
+  }
   if (en.conf && !en.notified) {
     const dp = A.lv.e < 2 ? 5 : A.lv.e < 200 ? 3 : 2;
     await push(`CONFIRMED A+ · ${m.n}`, `${dir} · ${A.ok}/8 checks · Zero Lag Trend + ZLSMA agree\nEntry ${fx(en.e, dp)}\nSL ${fx(en.sl, dp)} (risk ${(Math.abs(en.e - en.sl) / en.e * 100).toFixed(2)}%)\nTP1 ${fx(en.tp[0], dp)} (1:2) · TP2 ${fx(en.tp[1], dp)} (1:3)\n4H + 1H + 30M trend agree\nOpen the app to place it.`, A.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend');
@@ -142,4 +147,3 @@ fs.mkdirSync(new URL('alerts/', root), { recursive: true });
 if (JSON.stringify(LOG) !== LOG0) fs.writeFileSync(LF, JSON.stringify(LOG));
 console.log(`analyzed ${res.ok}, closed ${res.closed}, failed ${res.fail}, A+ now ${res.aplus.length}, A-grade now ${res.agrade.length} (${res.aplus.filter(x => x.conf).length} confirmed), newly logged ${logged}, sent ${sent}, picks sent ${pushedP}, 15m candles per market ${CN.length ? Math.min(...CN) + '-' + Math.max(...CN) : 'none'} (backtest needs 2000+)`);
 if (res.ok === 0 && res.closed === 0) process.exit(1);
-

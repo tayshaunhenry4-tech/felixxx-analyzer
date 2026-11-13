@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deriv Gold Symbol Checker</title>
+<style>
+body{margin:0;background:#0a1019;color:#edf3fb;font:16px/1.5 system-ui,Arial;padding:22px}
+main{max-width:760px;margin:auto}.card{background:#121d2b;border:1px solid #2b3c52;border-radius:16px;padding:20px;margin:14px 0}
+h1{font-size:22px;color:#f2bd4b}.muted{color:#9aabc0;font-size:13px}.status{padding:9px 12px;border:1px solid #30435a;border-radius:9px;margin:12px 0}
+button{background:#f2bd4b;border:0;border-radius:9px;padding:11px 16px;font-weight:800}
+code{color:#8fc0ff;overflow-wrap:anywhere}.symbol{font-size:23px;font-weight:800;color:#46dba0}
+</style></head><body><main>
+<h1>DK / DERIV GOLD SYMBOL CHECKER</h1>
+<p class="muted">Read-only public market-data check. No login, password, API token or trading permission required.</p>
+<div class="card"><b>Connection</b><div id="status" class="status">Connecting to Deriv public market data…</div><button id="retry">Reconnect</button></div>
+<div class="card"><b>Gold market matches</b><p class="muted">Looking for a market whose display name contains Gold or XAU.</p><div id="matches">Waiting for Deriv symbol list…</div></div>
+<div class="card"><b>Selected market live tick</b><div id="name">Not selected</div><div id="symbol" class="symbol">—</div><div id="price" style="font-size:30px;font-weight:800">—</div><div id="ticktime" class="muted">No tick received yet</div></div>
+<p class="muted">This checker only reads public prices. It does not place trades. The symbol list is authoritative for the connected Deriv API environment; if no Gold/XAU match appears, check the market availability in your Deriv account.</p>
+</main><script>
+let ws=null,subId=null;
+const $=id=>document.getElementById(id);
+function status(s){$('status').textContent=s}
+function connect(){
+ if(ws){try{ws.close()}catch(e){}}
+ $('matches').textContent='Requesting active symbols…';$('name').textContent='Not selected';$('symbol').textContent='—';$('price').textContent='—';$('ticktime').textContent='No tick received yet';
+ ws=new WebSocket('wss://api.derivws.com/trading/v1/options/ws/public');
+ ws.onopen=()=>{status('Connected. Requesting Deriv active symbols…');ws.send(JSON.stringify({active_symbols:'brief',req_id:1}))};
+ ws.onmessage=e=>{
+  let d;try{d=JSON.parse(e.data)}catch(err){return}
+  if(d.error){status('Deriv error: '+d.error.message);return}
+  if(d.msg_type==='active_symbols'){
+   const all=d.active_symbols||[];
+   const found=all.filter(x=>/gold|xau/i.test((x.underlying_symbol_name||'')+' '+(x.underlying_symbol||'')));
+   if(!found.length){$('matches').textContent='No Gold/XAU symbol was returned in the active list. Check Gold/USD availability in Deriv Trader and try again.';status('Connected, but no Gold/XAU match found.');return}
+   $('matches').innerHTML=found.map(x=>`<div class="status"><b>${esc(x.underlying_symbol_name||'Gold')}</b><br>API code: <code>${esc(x.underlying_symbol||'unknown')}</code><br>Market: ${esc(x.market||'—')} · Open: ${x.exchange_is_open?'Yes':'No'} · Suspended: ${x.is_trading_suspended?'Yes':'No'}</div>`).join('');
+   const chosen=found.find(x=>/gold\s*\/\s*usd/i.test(x.underlying_symbol_name||''))||found.find(x=>/xauusd/i.test(x.underlying_symbol||''))||found[0];
+   $('name').textContent=chosen.underlying_symbol_name||'Gold';$('symbol').textContent=chosen.underlying_symbol||'—';
+   status('Gold symbol found. Subscribing to live ticks…');
+   ws.send(JSON.stringify({ticks:chosen.underlying_symbol,subscribe:1,req_id:2}));
+  }
+  if(d.msg_type==='tick'&&d.tick){
+   $('price').textContent=Number(d.tick.quote).toFixed( chosenPips(d.tick.quote) );
+   $('ticktime').textContent='Last tick: '+new Date(d.tick.epoch*1000).toLocaleString();
+   status('Live tick stream connected');
+  }
+ };
+ ws.onerror=()=>status('Connection error. Check internet and tap Reconnect.');
+ ws.onclose=()=>{if($('status').textContent.indexOf('Live tick')<0)status('Connection closed. Tap Reconnect.')};
+}
+function chosenPips(n){return String(n).includes('.')?Math.min(8,String(n).split('.')[1].length):2}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+$('retry').onclick=connect;connect();
+</script></body></html>

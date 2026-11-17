@@ -80,6 +80,43 @@ try {
   }
 } catch (e) { console.log('picks error', e.message) }
 if (JSON.stringify(PK) !== PK0) { fs.mkdirSync(new URL('alerts/', root), { recursive: true }); fs.writeFileSync(PF, JSON.stringify(PK)) }
+// Opening-range box alerts (New York, London, Tokyo): box set, breakout, retest tapped. Same rules as the BOX tab.
+try {
+  const c1a = sc.indexOf('/* ---- NY opening-range retest'), c1b = sc.indexOf('async function nyRun'), c2a = sc.indexOf('const nyFmt='), c2b = sc.indexOf('function nbSvg(');
+  if (c1a < 0 || c1b < 0 || c2a < 0 || c2b < 0) throw new Error('box code not found in index.html');
+  const BXE = new Function(sc.slice(c1a, c1b) + '\n' + sc.slice(c2a, c2b) + '\nreturn {nyState,nyFmt,BXP};')();
+  const BF = new URL('alerts/box.json', root);
+  let BK = {}; try { BK = JSON.parse(fs.readFileSync(BF, 'utf8')) } catch (_) {}
+  const BK0 = JSON.stringify(BK); for (const k of Object.keys(BK)) if (nowS - BK[k] > 3 * 86400) delete BK[k];
+  const sets = {}, singles = [];
+  const BM = E.M.filter(m => !m.vol && !m.imp);
+  for (let i = 0; i < BM.length; i += 3) {
+    await Promise.all(BM.slice(i, i + 3).map(async m => {
+      try {
+        const d = await E.lcand(m.id, '5m', 900);
+        if (!d || d.length < 100 || nowS - d.at(-1).t > 1500) return;
+        for (const bx of Object.values(BXE.BXP).filter(b => !b.every)) {
+          const S = BXE.nyState(d, bx);
+          if (!S || S.status === 'forming' || nowS - S.st > 10 * 3600) continue;
+          const dp = S.H > 1000 ? 2 : S.H > 100 ? 3 : 5, base = `${m.id}|${bx.k}|${S.st}|`;
+          if (!BK[base + 'set']) { (sets[bx.k] = sets[bx.k] || []).push({ k: base + 'set', t: `${m.n} ${fx(S.L, dp)} to ${fx(S.H, dp)}` }) }
+          if (S.dir && !BK[base + 'broke'] && (S.status === 'broke' || S.status === 'entry')) singles.push({ k: base + 'broke', title: `BREAKOUT · ${m.n} (${bx.n})`, body: `Closed ${S.dir > 0 ? 'above' : 'below'} the box. Do not chase it. Wait for price to come back to ${fx(S.dir > 0 ? S.H : S.L, dp)}.`, tag: 'warning' });
+          if (S.status === 'entry' && !BK[base + 'entry']) singles.push({ k: base + 'entry', title: `RETEST TAPPED · ${S.dir > 0 ? 'BUY' : 'SELL'} ${m.n} (${bx.n})`, body: `Entry ${fx(S.e, dp)}\nStop A ${fx(S.v[0].stop, dp)} · Stop B ${fx(S.v[1].stop, dp)}\nTarget ${fx(S.v[0].tp, dp)}\nChecked every 5 minutes, so open the app and look before acting.`, tag: S.dir > 0 ? 'chart_with_upwards_trend' : 'chart_with_downwards_trend' });
+        }
+      } catch (e) { console.log('box fail', m.n, e.message) }
+    }));
+  }
+  let bs = 0;
+  for (const [k, arr] of Object.entries(sets)) {
+    if (bs >= 3) break;
+    await push(`BOX SET · ${BXE.BXP[k].n} · ${arr.length} market${arr.length === 1 ? '' : 's'}`, arr.slice(0, 8).map(x => x.t).join('\n') + '\nWait for a 5M candle to close outside the box. Do not chase.', 'bat');
+    arr.forEach(x => { BK[x.k] = nowS }); bs++;
+  }
+  let sb = 0;
+  for (const x of singles) { if (sb >= 6) break; await push(x.title, x.body, x.tag); BK[x.k] = nowS; sb++ }
+  if (JSON.stringify(BK) !== BK0) { fs.mkdirSync(new URL('alerts/', root), { recursive: true }); fs.writeFileSync(BF, JSON.stringify(BK)) }
+  console.log(`box alerts: ${bs} box-set, ${sb} breakout/retest`);
+} catch (e) { console.log('box alerts error', e.message) }
 E.stop();
 
 // 1) results for setups already logged: TP1 or stop first (stop wins ties, like the backtest)
